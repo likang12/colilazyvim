@@ -1,0 +1,73 @@
+
+# 继承基础风格。常见: LLVM, GNU, Google, Chromium, Microsoft, Mozilla, WebKit
+BasedOnStyle: LLVM
+# 语言模式。常见: Cpp, C, Java, JavaScript, Proto, CSharp
+Language: Cpp
+
+## Indentation
+# 是否使用 Tab。可选: Never, ForIndentation, ForContinuationAndIndentation, AlignWithSpaces, Always
+UseTab: Never
+# 基础缩进宽度(空格数)。整数
+IndentWidth: 4
+# Tab 显示宽度。整数
+TabWidth: 4
+# 续行缩进宽度。整数
+ContinuationIndentWidth: 8
+# case 标签是否继续缩进。可选: true, false
+IndentCaseLabels: false
+
+## Line breaks / wrapping
+# 每行最大列宽。0 表示不限制；常见: 80, 100, 120
+ColumnLimit: 80
+# 大括号换行风格。常见: Attach, Linux, Mozilla, Stroustrup, Allman, GNU, WebKit, Custom
+BreakBeforeBraces: Linux
+# 开括号后对齐策略。常见: Align, DontAlign, AlwaysBreak, BlockIndent
+AlignAfterOpenBracket: DontAlign
+# 函数声明参数是否尽量同一行打包。可选: true, false
+BinPackParameters: true
+# 函数调用参数是否尽量同一行打包。可选: true, false
+BinPackArguments: true
+# 声明参数是否允许整体挪到下一行。可选: true, false
+AllowAllParametersOfDeclarationOnNextLine: false
+# 调用参数是否允许整体挪到下一行。可选: true, false
+AllowAllArgumentsOnNextLine: false
+
+## Short statements
+# 短函数单行策略。可选: None, InlineOnly, Empty, Inline, All
+AllowShortFunctionsOnASingleLine: Empty
+# 短 if 单行策略。可选: Never, WithoutElse, OnlyFirstIf, AllIfsAndElse
+AllowShortIfStatementsOnASingleLine: Never
+# 短循环是否单行。可选: true, false
+AllowShortLoopsOnASingleLine: false
+# 短代码块单行策略。可选: Never, Empty, Always
+AllowShortBlocksOnASingleLine: Never
+
+## Spacing / pointers
+# 指针星号对齐位置。可选: Left, Right, Middle
+PointerAlignment: Right
+# 圆括号前空格策略。常见: Never, ControlStatements, ControlStatementsExceptControlMacros, NonEmptyParentheses, Always, Custom
+SpaceBeforeParens: ControlStatements
+# 圆括号内部是否加空格。可选: true, false
+SpacesInParentheses: false
+# C 风格强转后是否加空格。可选: true, false
+SpaceAfterCStyleCast: true
+
+## Includes / comments
+# 是否排序 #include。可选: true, false
+SortIncludes: false
+# include 分组策略。可选: Preserve, Merge, Regroup
+IncludeBlocks: Preserve
+# 是否重排注释文本换行。可选: true, false
+ReflowComments: false
+
+## Alignment / misc
+# 连续赋值语句是否对齐。可选: true, false
+AlignConsecutiveAssignments: false
+# 连续声明是否对齐。可选: true, false
+AlignConsecutiveDeclarations: false
+# 操作符对齐策略。可选: Align, DontAlign, AlignAfterOperator
+AlignOperands: DontAlign
+# 反斜杠续行对齐策略。可选: DontAlign, Left, LeftWithLastLine
+AlignEscapedNewlines: Left
+# 块起始处是否保留空行。可选: true, false
+KeepEmptyLinesAtTheStartOfBlocks: false

@@ -1,0 +1,100 @@
+return {
+  {
+    "Exafunction/codeium.nvim",
+    event = "InsertEnter",
+    init = function()
+      local group = vim.api.nvim_create_augroup("CodeiumVirtualTextOnInsert", { clear = true })
+      vim.api.nvim_create_autocmd("InsertEnter", {
+        group = group,
+        callback = function()
+          if vim.bo.buftype ~= "" then
+            return
+          end
+          vim.schedule(function()
+            local ok_codeium, codeium = pcall(require, "codeium")
+            if not ok_codeium or not (codeium.s and codeium.s.enabled) then
+              return
+            end
+            local ok_vt, vt = pcall(require, "codeium.virtual_text")
+            if ok_vt then
+              vt.debounced_complete()
+            end
+          end)
+        end,
+      })
+    end,
+    opts = function(_, opts)
+      opts.enable_cmp_source = true
+      opts.virtual_text = vim.tbl_deep_extend("force", opts.virtual_text or {}, {
+        enabled = true,
+        manual = false,
+        idle_delay = 0,
+        map_keys = true,
+        key_bindings = {
+          accept = "<M-;>",
+          next = "<M-]>",
+          prev = "<M-[>",
+        },
+      })
+    end,
+    keys = {
+      {
+        "<M-]>",
+        function()
+          require("codeium.virtual_text").cycle_or_complete()
+        end,
+        mode = "i",
+        desc = "Codeium Trigger/Cycle",
+      },
+      {
+        "<M-\\>",
+        function()
+          local codeium = require("codeium")
+          codeium.toggle()
+          if codeium.s and codeium.s.enabled and vim.fn.mode():match("^[iR]") then
+            require("codeium.virtual_text").debounced_complete()
+          end
+        end,
+        mode = { "n", "i" },
+        desc = "Codeium Enable/Disable",
+      },
+    },
+  },
+  {
+    "saghen/blink.cmp",
+    optional = true,
+    opts = function(_, opts)
+      opts.sources = opts.sources or {}
+      opts.sources.compat = opts.sources.compat or {}
+      if not vim.tbl_contains(opts.sources.compat, "codeium") then
+        table.insert(opts.sources.compat, "codeium")
+      end
+      opts.sources.providers = opts.sources.providers or {}
+      opts.sources.providers.codeium = vim.tbl_deep_extend("force", opts.sources.providers.codeium or {}, {
+        kind = "Codeium",
+        score_offset = 100,
+        async = true,
+      })
+
+      opts.completion = opts.completion or {}
+      opts.completion.trigger = vim.tbl_deep_extend("force", opts.completion.trigger or {}, {
+        show_on_keyword = true,
+      })
+      opts.completion.menu = vim.tbl_deep_extend("force", opts.completion.menu or {}, {
+        auto_show = true,
+      })
+      opts.completion.list = vim.tbl_deep_extend("force", opts.completion.list or {}, {
+        selection = {
+          preselect = false,
+        },
+      })
+      opts.completion.ghost_text = vim.tbl_deep_extend("force", opts.completion.ghost_text or {}, {
+        enabled = false,
+      })
+
+      opts.keymap = opts.keymap or {}
+      opts.keymap["<C-n>"] = { "insert_next", "fallback" }
+      opts.keymap["<C-p>"] = { "insert_prev", "fallback" }
+    end,
+  },
+}

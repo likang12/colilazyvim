@@ -1,0 +1,180 @@
+-- lazy.nvim
+return {
+  "olimorris/codecompanion.nvim",
+  dependencies = {
+    "nvim-lua/plenary.nvim",
+    "nvim-treesitter/nvim-treesitter",
+    "ravitemer/codecompanion-history.nvim",
+    {
+      "MeanderingProgrammer/render-markdown.nvim",
+      ft = { "markdown", "codecompanion" },
+      opts = {
+        file_types = { "markdown", "codecompanion" },
+      },
+    },
+  },
+  opts = {
+    -- NOTE: The log_level is in `opts.opts`
+    opts = {
+      log_level = "DEBUG", -- or "TRACE"
+    },
+  },
+  keys = {
+    { "<leader>aa", "<cmd>CodeCompanionChat<cr>", desc = "Open CodeCompanion Chat" },
+    {
+      "<leader>ag",
+      "<cmd>CodeCompanionChat adapter=cursor_cli command=default<cr>",
+      desc = "Cursor Agent Mode",
+    },
+    {
+      "<leader>ap",
+      "<cmd>CodeCompanionChat adapter=cursor_cli command=plan<cr>",
+      desc = "Cursor Plan Mode",
+    },
+    {
+      "<leader>aq",
+      "<cmd>CodeCompanionChat adapter=cursor_cli command=ask<cr>",
+      desc = "Cursor Ask Mode",
+    },
+    {
+      "<leader>ad",
+      "<cmd>CodeCompanionChat adapter=cursor_cli command=debug<cr>",
+      desc = "Cursor Debug Chat (type /debug)",
+    },
+    { "<leader>am", "<cmd>RenderMarkdown toggle<cr>", desc = "Toggle Markdown Preview Render" },
+    { "<leader>at", "<cmd>CodeCompanionChat Toggle<cr>", desc = "Toggle CodeCompanion Chat" },
+    { "<leader>ah", "<cmd>CodeCompanionHistory<cr>", desc = "Open CodeCompanion History" },
+    -- 内联编辑（选中代码后使用）
+    { "<leader>ai", "<cmd>CodeCompanion<cr>", desc = "CodeCompanion Inline Edit" },
+    -- 添加代码到聊天上下文
+    { "<leader>ac", "<cmd>CodeCompanionChat Add<cr>", desc = "Add to CodeCompanion Chat" },
+    -- 在 Visual 模式下保留选区范围（使用 : 而非 <cmd>）
+    { "<leader>ai", ":CodeCompanion<cr>", mode = "v", desc = "CodeCompanion Inline Edit" },
+    -- 在 Visual 模式下添加选中内容到聊天（避免占用常见的 ga/gc）
+    { "<leader>ac", ":CodeCompanionChat Add<cr>", mode = "v", desc = "Add Selection to Chat" },
+  },
+  config = function(_, opts)
+    -- cursor_cli (ACP) only applies session model from adapter.defaults.model — a
+    -- top-level `model = "..."` key is merged but ignored by apply_default_model.
+    local acp = require("codecompanion.adapters.acp")
+    local http = require("codecompanion.adapters.http")
+    local cursor_adapter = acp.extend("cursor_cli", {
+      commands = {
+        default = {
+          "agent",
+          "--mode",
+          "plan",
+          "--model",
+          "gpt-5.3-codex",
+          "acp",
+        }, -- Default command arguments for the AI agent
+        ask = {
+          "agent",
+          "--mode",
+          "ask",
+          "--model",
+          "gpt-5.3-codex",
+          "acp",
+        },
+        plan = {
+          "agent",
+          "--mode",
+          "plan",
+          "--model",
+          "gpt-5.3-codex",
+          "acp",
+        },
+        debug = {
+          "agent",
+          "--model",
+          "gpt-5.3-codex",
+          "acp",
+        },
+        composer = {
+          "agent",
+          "--model",
+          "composer-1.5",
+          "acp",
+        },
+        composer2 = {
+          "agent",
+          "--model",
+          "composer-2",
+          "acp",
+        },
+        chatgpt54 = {
+          "agent",
+          "--model",
+          "gpt-5.4-medium",
+          "acp",
+        },
+        chatgpt54_fast = {
+          "agent",
+          "--model",
+          "gpt-5.4-medium-fast",
+          "acp",
+        },
+        opus46 = {
+          "agent",
+          "--model",
+          "claude-4.6-opus-high",
+          "acp",
+        },
+      },
+      -- Do not set defaults.model for ACP here, otherwise it will override
+      -- the model selected by command flags (e.g. command=composer2).
+    })
+    local deepseek_adapter = http.extend("openai_compatible", {
+      name = "deepseek",
+      formatted_name = "DeepSeek",
+      env = {
+        api_key = "DEEPSEEK_API_KEY",
+        url = "https://api.deepseek.com",
+      },
+      schema = {
+        model = {
+          default = "deepseek-chat",
+        },
+      },
+    })
+
+    local plugin_opts = vim.tbl_deep_extend("force", opts or {}, {
+      adapters = {
+        acp = {
+          cursor_cli = cursor_adapter,
+        },
+        http = {
+          deepseek = deepseek_adapter,
+        },
+      },
+      interactions = {
+        chat = {
+          adapter = "cursor_cli",
+        },
+        inline = {
+          -- Inline uses an HTTP adapter; DeepSeek speaks OpenAI-compatible HTTP.
+          adapter = deepseek_adapter,
+        },
+      },
+      extensions = {
+        history = {
+          enabled = true,
+          opts = {
+            dir_to_save = vim.fn.stdpath("data") .. "/codecompanion_chats.json",
+            -- History title generation does not support ACP adapters
+            -- (e.g. cursor_cli), so force an HTTP adapter here.
+            title_generation_opts = {
+              adapter = "deepseek",
+              model = "deepseek-chat",
+            },
+          },
+        },
+      },
+    })
+    require("codecompanion").setup(plugin_opts)
+  end,
+  --- Other package managers
+  --- config = function(_, opts)
+  ---   require("illuminate").setup(opts)
+  --- end,
+}

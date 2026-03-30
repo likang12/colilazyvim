@@ -66,21 +66,24 @@ return {
     local acp = require("codecompanion.adapters.acp")
     local http = require("codecompanion.adapters.http")
     local default_chat_model = "gpt-5.3-codex-high"
+    -- ACP model IDs differ from CLI --model names.
+    -- CLI uses e.g. "gpt-5.3-codex-high", but ACP exposes
+    -- "gpt-5.3-codex[reasoning=medium,fast=false]" with no high/low variants.
+    local acp_model_map = {
+      ["gpt-5.3-codex"] = "gpt-5.3-codex",
+      ["gpt-5.4"] = "gpt-5.4",
+      ["claude-sonnet-4-6"] = "claude-sonnet-4-6",
+      ["claude-opus-4-6"] = "claude-opus-4-6",
+      ["composer-2"] = "composer-2",
+    }
     local function normalize_acp_model(model)
       if type(model) ~= "string" or model == "" then
-        return default_chat_model
+        return acp_model_map["gpt-5.3-codex"] or "gpt-5.3-codex"
       end
-      if model:find("^gpt%-5%.4", 1, false) then
-        return "gpt-5.4"
-      end
-      if model:find("^claude%-4%.6%-opus", 1, false) then
-        return "claude-opus-4-6"
-      end
-      if model:find("^composer%-2", 1, false) then
-        return "composer-2"
-      end
-      if model:find("^gpt%-5%.3%-codex", 1, false) then
-        return "gpt-5.3-codex"
+      for prefix, acp_id in pairs(acp_model_map) do
+        if model:find("^" .. prefix:gsub("%-", "%%-"):gsub("%.", "%%."), 1, false) then
+          return acp_id
+        end
       end
       return model
     end
@@ -89,14 +92,14 @@ return {
         and adapter.commands
         and (adapter.commands.selected or adapter.commands.default)
       if type(selected) ~= "table" then
-        return default_chat_model
+        return normalize_acp_model(default_chat_model)
       end
       for i = 1, #selected - 1 do
         if selected[i] == "--model" and type(selected[i + 1]) == "string" and selected[i + 1] ~= "" then
           return normalize_acp_model(selected[i + 1])
         end
       end
-      return default_chat_model
+      return normalize_acp_model(default_chat_model)
     end
     local cursor_adapter = acp.extend("cursor_cli", {
       commands = {
@@ -140,10 +143,10 @@ return {
           "gpt-5.4-medium",
           "acp",
         },
-        opus46 = {
+        sonnet46 = {
           "agent",
           "--model",
-          "claude-4.6-opus-high",
+          "claude-sonnet-4-6",
           "acp",
         },
         composer2 = {

@@ -7,6 +7,12 @@
 vim.keymap.set("n", "<A-h>", "<cmd>bprev<cr>", { desc = "Prev Buffer" })
 vim.keymap.set("n", "<A-l>", "<cmd>bnext<cr>", { desc = "Next Buffer" })
 
+-- Esc 保持原生行为：不清除搜索高亮
+vim.keymap.set({ "i", "n", "s" }, "<Esc>", function()
+  LazyVim.cmp.actions.snippet_stop()
+  return "<Esc>"
+end, { expr = true, desc = "Escape" })
+
 -- 恢复 H 键的原生功能：移动到当前屏幕显示的第一行（顶部）
 vim.keymap.set({ "n", "v" }, "H", "H", { desc = "Move to top of screen" })
 

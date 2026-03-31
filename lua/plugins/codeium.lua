@@ -8,6 +8,10 @@ return {
         enabled = true,
         manual = false,
         idle_delay = 0,
+        filetypes = {
+          codecompanion = false,
+        },
+        default_filetype_enabled = true,
         map_keys = true,
         accept_fallback = nil,
         key_bindings = {

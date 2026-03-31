@@ -29,37 +29,14 @@ return {
   },
   keys = {
     { "<leader>aa", "<cmd>CodeCompanionChat<cr>", desc = "Open CodeCompanion Chat" },
-    {
-      "<leader>ag",
-      "<cmd>CodeCompanionChat adapter=cursor_cli command=default<cr>",
-      desc = "Cursor Agent Mode",
-    },
-    {
-      "<leader>ap",
-      "<cmd>CodeCompanionChat adapter=cursor_cli command=plan<cr>",
-      desc = "Cursor Plan Mode",
-    },
-    {
-      "<leader>aq",
-      "<cmd>CodeCompanionChat adapter=cursor_cli command=ask<cr>",
-      desc = "Cursor Ask Mode",
-    },
-    {
-      "<leader>as",
-      "<cmd>CodeCompanionChat adapter=deepseek<cr>",
-      desc = "CodeCompanion Tools Chat (HTTP)",
-    },
-    { "<leader>am", "<cmd>RenderMarkdown toggle<cr>", desc = "Toggle Markdown Preview Render" },
+    { "<leader>ag", "<cmd>CodeCompanionChat adapter=cursor_cli command=default<cr>", desc = "Cursor Agent Mode",},
+    { "<leader>ah", "<cmd>CodeCompanionChat adapter=deepseek<cr>", "<leader>as", desc = "CodeCompanion Tools Chat (HTTP)", },
     { "<leader>at", "<cmd>CodeCompanionChat Toggle<cr>", desc = "Toggle CodeCompanion Chat" },
     { "<leader>ah", "<cmd>CodeCompanionHistory<cr>", desc = "Open CodeCompanion History" },
     -- 内联编辑（选中代码后使用）
-    { "<leader>ai", "<cmd>CodeCompanion<cr>", desc = "CodeCompanion Inline Edit" },
-    -- 添加代码到聊天上下文
-    { "<leader>ac", "<cmd>CodeCompanionChat Add<cr>", desc = "Add to CodeCompanion Chat" },
-    -- 在 Visual 模式下保留选区范围（使用 : 而非 <cmd>）
-    { "<leader>ai", ":CodeCompanion<cr>", mode = "v", desc = "CodeCompanion Inline Edit" },
-    -- 在 Visual 模式下添加选中内容到聊天（避免占用常见的 ga/gc）
-    { "<leader>ac", ":CodeCompanionChat Add<cr>", mode = "v", desc = "Add Selection to Chat" },
+    { "<leader>ac", ":CodeCompanionChat Add<cr>", mode = {"n", "v"}, desc = "Add Selection to Chat" },
+    { "<leader>ai", ":CodeCompanion<cr>", mode = {"n", "v"}, desc = "CodeCompanion Inline Edit" },
+    { "<leader>am", "<cmd>RenderMarkdown toggle<cr>", desc = "Toggle Markdown Preview Render" },
   },
   config = function(_, opts)
     -- Chat (ACP): switch model with /command, no env vars required.

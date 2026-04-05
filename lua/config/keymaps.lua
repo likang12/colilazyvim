@@ -3,6 +3,14 @@
 -- Add any additional keymaps here
 --
 
+-- 浮动终端：Ctrl+/（及等价 Ctrl+_）在 cwd 打开，覆盖 LazyVim 默认的 LazyVim.root()
+vim.keymap.set({ "n", "t" }, "<C-/>", function()
+  Snacks.terminal()
+end, { desc = "Terminal (cwd)", silent = true })
+vim.keymap.set({ "n", "t" }, "<C-_>", function()
+  Snacks.terminal(nil, { cwd = LazyVim.root() })
+end, { desc = "Terminal (Root Dir)", silent = true })
+
 -- buffer 切换
 vim.keymap.set("n", "<A-h>", "<cmd>bprev<cr>", { desc = "Prev Buffer" })
 vim.keymap.set("n", "<A-l>", "<cmd>bnext<cr>", { desc = "Next Buffer" })

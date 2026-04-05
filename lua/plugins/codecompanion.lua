@@ -1,204 +1,264 @@
--- lazy.nvim
+local function set_codecompanion_input_behavior(auto_submit, return_win)
+  vim.schedule(function()
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype == "codecompanion_input" then
+        vim.b[bufnr].codecompanion_prompt_auto_submit = auto_submit
+        vim.b[bufnr].codecompanion_prompt_return_win = return_win
+      end
+    end
+  end)
+end
+
 return {
   "olimorris/codecompanion.nvim",
   dependencies = {
     "nvim-lua/plenary.nvim",
     "nvim-treesitter/nvim-treesitter",
-    "ravitemer/codecompanion-history.nvim",
-    {
-      "MeanderingProgrammer/render-markdown.nvim",
-      ft = { "markdown", "codecompanion" },
-      opts = {
-        file_types = { "markdown", "codecompanion" },
-      },
-    },
   },
   opts = {
-    -- NOTE: The log_level is in `opts.opts`
     opts = {
-      log_level = "DEBUG", -- or "TRACE"
+      log_level = "INFO",
     },
+    interactions = {
+      cli = {
+        agent = "cursor",
+        agents = {
+          cursor = {
+            cmd = "agent",
+            args = {},
+            description = "Cursor CLI",
+          },
+          opencode = {
+            cmd = "opencode",
+            args = {},
+            description = "OpenCode CLI",
+          },
+        },
+      },
+    },
+    -- Keep Esc for mode switch in prompt editor; close uses q.
     display = {
       chat = {
         window = {
-          layout = "vertical", -- 侧边窗口
-          width = 0.33, -- 当前编辑区宽度的 1/3
+          width = 1 / 3,
+        },
+      },
+      cli = {
+        window = {
+          width = 1 / 3,
+        },
+      },
+      input = {
+        keymaps = {
+          close = {
+            modes = {
+              n = { "<Esc>" },
+            },
+            description = "Close",
+          },
         },
       },
     },
   },
   keys = {
-    { "<leader>aa", "<cmd>CodeCompanionChat<cr>", desc = "Open CodeCompanion Chat" },
-    { "<leader>ag", "<cmd>CodeCompanionChat adapter=cursor_cli command=default<cr>", desc = "Cursor Agent Mode",},
-    { "<leader>ah", "<cmd>CodeCompanionChat adapter=deepseek<cr>", "<leader>as", desc = "CodeCompanion Tools Chat (HTTP)", },
-    { "<leader>at", "<cmd>CodeCompanionChat Toggle<cr>", desc = "Toggle CodeCompanion Chat" },
-    { "<leader>ah", "<cmd>CodeCompanionHistory<cr>", desc = "Open CodeCompanion History" },
-    -- 内联编辑（选中代码后使用）
-    { "<leader>ac", ":CodeCompanionChat Add<cr>", mode = {"n", "v"}, desc = "Add Selection to Chat" },
-    { "<leader>ai", ":CodeCompanion<cr>", mode = {"n", "v"}, desc = "CodeCompanion Inline Edit" },
-    { "<leader>am", "<cmd>RenderMarkdown toggle<cr>", desc = "Toggle Markdown Preview Render" },
+    {
+      "<leader>aa",
+      function()
+        local cli = require("codecompanion.interactions.cli")
+        local instance = cli.find_by_agent("cursor")
+        if instance then
+          if not instance.ui:is_visible() then
+            instance.ui:open()
+          end
+          instance:focus()
+          return
+        end
+        require("codecompanion").cli({ agent = "cursor" })
+      end,
+      desc = "Open CodeCompanionCLI chat",
+    },
+    {
+      "<leader>an",
+      function()
+        local cli = require("codecompanion.interactions.cli")
+        local visible = cli.get_visible()
+        if visible then
+          visible.ui:hide()
+        end
+
+        local instance = cli.create({ agent = "cursor" })
+        if instance then
+          instance.ui:open()
+          instance:focus()
+        end
+      end,
+      desc = "New CodeCompanion session",
+    },
+    {
+      "<leader>af",
+      function()
+        local cli = require("codecompanion.interactions.cli")
+        local instance = cli.get_visible() or cli.find_by_agent("cursor")
+        if instance then
+          if not instance.ui:is_visible() then
+            instance.ui:open()
+          end
+          instance:focus()
+          return
+        end
+        require("codecompanion").cli({ agent = "cursor" })
+      end,
+      desc = "Focus Cursor agent input",
+    },
+    {
+      "<leader>at",
+      function()
+        require("codecompanion").toggle_cli()
+      end,
+      desc = "Toggle CodeCompanionCLI chat",
+    },
+    {
+      "<leader>ae",
+      function()
+        local opts = { agent = "cursor", prompt = true , submit = true }
+        require("codecompanion").cli(opts)
+        set_codecompanion_input_behavior(true, nil)
+      end,
+      mode = { "n", "v" },
+      desc = "Open prompt popup for CodeCompanionCLI",
+    },
+    {
+      "<leader>ac",
+      function()
+        local mode = vim.fn.mode()
+        local is_visual = mode == "v" or mode == "V" or mode == "\22"
+        local opts = {
+          agent = "cursor",
+          submit = false,
+          prompt = false,
+          focus = true,
+        }
+        if is_visual then
+          opts.args = { range = 1 }
+          local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+          vim.api.nvim_feedkeys(esc, "nx", false)
+          vim.schedule(function()
+            require("codecompanion").cli("#{this}", opts)
+          end)
+          return
+        end
+        require("codecompanion").cli("#{this}", opts)
+      end,
+      mode = { "n", "v" },
+      desc = "Add context and focus CodeCompanionCLI",
+    },
+    {
+      "<leader>al",
+      function()
+        local editor_win = vim.api.nvim_get_current_win()
+        local opts = { agent = "cursor", prompt = true , submit = false, focus = false }
+        require("codecompanion").cli(opts)
+        set_codecompanion_input_behavior(false, editor_win)
+      end,
+      mode = { "n", "v" },
+      desc = "Open prompt popup for CodeCompanionCLI",
+    },
+    {
+      "<leader>ad",
+      function()
+        require("codecompanion").cli("#{diagnostics} Please fix these issues.", {
+          agent = "cursor",
+          focus = false,
+          submit = true,
+        })
+      end,
+      mode = { "n" },
+      desc = "Send diagnostics to Cursor CLI",
+    },
   },
   config = function(_, opts)
-    -- Chat (ACP): switch model with /command, no env vars required.
-    local acp = require("codecompanion.adapters.acp")
-    local http = require("codecompanion.adapters.http")
-    local default_chat_model = "gpt-5.3-codex-high"
-    -- ACP model IDs differ from CLI --model names.
-    -- CLI uses e.g. "gpt-5.3-codex-high", but ACP exposes
-    -- "gpt-5.3-codex[reasoning=medium,fast=false]" with no high/low variants.
-    local acp_model_map = {
-      ["gpt-5.3-codex"] = "gpt-5.3-codex",
-      ["gpt-5.4"] = "gpt-5.4",
-      ["claude-sonnet-4-6"] = "claude-sonnet-4-6",
-      ["claude-opus-4-6"] = "claude-opus-4-6",
-      ["composer-2"] = "composer-2",
-    }
-    local function normalize_acp_model(model)
-      if type(model) ~= "string" or model == "" then
-        return acp_model_map["gpt-5.3-codex"] or "gpt-5.3-codex"
-      end
-      for prefix, acp_id in pairs(acp_model_map) do
-        if model:find("^" .. prefix:gsub("%-", "%%-"):gsub("%.", "%%."), 1, false) then
-          return acp_id
-        end
-      end
-      return model
-    end
-    local function acp_model_from_selected_command(adapter)
-      local selected = adapter
-        and adapter.commands
-        and (adapter.commands.selected or adapter.commands.default)
-      if type(selected) ~= "table" then
-        return normalize_acp_model(default_chat_model)
-      end
-      for i = 1, #selected - 1 do
-        if selected[i] == "--model" and type(selected[i + 1]) == "string" and selected[i + 1] ~= "" then
-          return normalize_acp_model(selected[i + 1])
-        end
-      end
-      return normalize_acp_model(default_chat_model)
-    end
-    local cursor_adapter = acp.extend("cursor_cli", {
-      commands = {
-        default = {
-          "agent",
-          "--model",
-          default_chat_model,
-          "acp",
-        },
-        plan = {
-          "agent",
-          "--mode",
-          "plan",
-          "--model",
-          default_chat_model,
-          "acp",
-        },
-        ask = {
-          "agent",
-          "--mode",
-          "ask",
-          "--model",
-          default_chat_model,
-          "acp",
-        },
-        debug = {
-          "agent",
-          "--model",
-          default_chat_model,
-          "acp",
-        },
-        codex53 = {
-          "agent",
-          "--model",
-          "gpt-5.3-codex",
-          "acp",
-        },
-        gpt54 = {
-          "agent",
-          "--model",
-          "gpt-5.4-medium",
-          "acp",
-        },
-        sonnet46 = {
-          "agent",
-          "--model",
-          "claude-sonnet-4-6",
-          "acp",
-        },
-        composer2 = {
-          "agent",
-          "--model",
-          "composer-2",
-          "acp",
-        },
-      },
-      defaults = {
-        timeout = 60000,
-        model = function(adapter)
-          return acp_model_from_selected_command(adapter)
-        end,
-      },
-    })
-    local deepseek_adapter = http.extend("openai_compatible", {
-      name = "deepseek",
-      formatted_name = "DeepSeek",
-      env = {
-        api_key = "DEEPSEEK_API_KEY",
-        url = "https://api.deepseek.com",
-      },
-      schema = {
-        model = {
-          default = "deepseek-chat",
-        },
-      },
-    })
-    local inline_adapter_name = vim.env.CODECOMPANION_INLINE_ADAPTER or "deepseek"
-    local inline_adapter = deepseek_adapter
-    if inline_adapter_name ~= "deepseek" then
-      inline_adapter = {
-        name = inline_adapter_name,
-        model = vim.env.CODECOMPANION_INLINE_MODEL,
-      }
-    end
+    require("codecompanion").setup(opts)
 
-    local plugin_opts = vim.tbl_deep_extend("force", opts or {}, {
-      adapters = {
-        acp = {
-          cursor_cli = cursor_adapter,
-        },
-        http = {
-          deepseek = deepseek_adapter,
-        },
-      },
-      interactions = {
-        chat = {
-          adapter = "cursor_cli",
-        },
-        inline = {
-          -- Inline only supports HTTP adapters.
-          adapter = inline_adapter,
-        },
-      },
-      extensions = {
-        history = {
-          enabled = true,
-          opts = {
-            dir_to_save = vim.fn.stdpath("data") .. "/codecompanion_chats.json",
-            -- History title generation does not support ACP adapters
-            -- (e.g. cursor_cli), so force an HTTP adapter here.
-            title_generation_opts = {
-              adapter = "deepseek",
-              model = "deepseek-chat",
-            },
-          },
-        },
-      },
+    vim.api.nvim_create_autocmd("FileType", {
+      pattern = "codecompanion_cli",
+      callback = function(args)
+        local map_opts = { buffer = args.buf, noremap = true, silent = true }
+
+        vim.keymap.set("t", "<Esc>", [[<C-\><C-n>]], map_opts)
+        vim.keymap.set("t", "<C-w>p", [[<C-\><C-n><C-w>p]], map_opts)
+        vim.keymap.set("t", "<C-w>h", [[<C-\><C-n><C-w>h]], map_opts)
+        vim.keymap.set("t", "<C-w>j", [[<C-\><C-n><C-w>j]], map_opts)
+        vim.keymap.set("t", "<C-w>k", [[<C-\><C-n><C-w>k]], map_opts)
+        vim.keymap.set("t", "<C-w>l", [[<C-\><C-n><C-w>l]], map_opts)
+        vim.keymap.set("t", "<C-w><Left>", [[<C-\><C-n><C-w>h]], map_opts)
+        vim.keymap.set("t", "<C-w><Down>", [[<C-\><C-n><C-w>j]], map_opts)
+        vim.keymap.set("t", "<C-w><Up>", [[<C-\><C-n><C-w>k]], map_opts)
+        vim.keymap.set("t", "<C-w><Right>", [[<C-\><C-n><C-w>l]], map_opts)
+        vim.keymap.set("t", "<C-r>", function()
+          local job = vim.b.terminal_job_id
+          if job then
+            vim.api.nvim_chan_send(job, "\x12")
+          end
+        end, map_opts)
+
+        vim.keymap.set("n", "<Esc>", "<C-w>p", map_opts)
+        vim.keymap.set("n", "<C-w>p", "<C-w>p", map_opts)
+        vim.keymap.set("n", "<C-w>h", "<C-w>h", map_opts)
+        vim.keymap.set("n", "<C-w>j", "<C-w>j", map_opts)
+        vim.keymap.set("n", "<C-w>k", "<C-w>k", map_opts)
+        vim.keymap.set("n", "<C-w>l", "<C-w>l", map_opts)
+        vim.keymap.set("n", "<C-w><Left>", "<C-w>h", map_opts)
+        vim.keymap.set("n", "<C-w><Down>", "<C-w>j", map_opts)
+        vim.keymap.set("n", "<C-w><Up>", "<C-w>k", map_opts)
+        vim.keymap.set("n", "<C-w><Right>", "<C-w>l", map_opts)
+        vim.keymap.set("n", "<C-r>", function()
+          local job = vim.b.terminal_job_id
+          if job then
+            vim.api.nvim_chan_send(job, "\x12")
+          end
+        end, map_opts)
+      end,
     })
-    require("codecompanion").setup(plugin_opts)
+
+    vim.api.nvim_create_autocmd("FileType", {
+      pattern = "codecompanion_input",
+      callback = function(args)
+        local map_opts = { buffer = args.buf, noremap = true, silent = true }
+
+        -- Defer so our mappings override plugin defaults set right after FileType.
+        vim.schedule(function()
+          if not vim.api.nvim_buf_is_valid(args.buf) then
+            return
+          end
+
+          local function submit_input()
+            local auto_submit = vim.b[args.buf].codecompanion_prompt_auto_submit == true
+            local return_win = vim.b[args.buf].codecompanion_prompt_return_win
+            if auto_submit then
+              vim.cmd("write!")
+            else
+              vim.cmd("write")
+            end
+            if not auto_submit and return_win and vim.api.nvim_win_is_valid(return_win) then
+              -- CLI focus happens with a small defer in the plugin; run later to keep editor focus.
+              vim.defer_fn(function()
+                if vim.api.nvim_win_is_valid(return_win) then
+                  vim.api.nvim_set_current_win(return_win)
+                  vim.cmd("stopinsert")
+                end
+              end, 30)
+            end
+          end
+
+          vim.keymap.set("i", "<Esc>", "<C-[>", map_opts)
+          vim.keymap.set("n", "<CR>", submit_input, map_opts)
+          vim.keymap.set("n", "<C-s>", submit_input, map_opts)
+          vim.keymap.set("i", "<C-s>", function()
+            vim.cmd("stopinsert")
+            submit_input()
+          end, map_opts)
+        end)
+      end,
+    })
   end,
-  --- Other package managers
-  --- config = function(_, opts)
-  ---   require("illuminate").setup(opts)
-  --- end,
 }

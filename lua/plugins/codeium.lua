@@ -10,6 +10,17 @@ return {
         idle_delay = 0,
         filetypes = {
           codecompanion = false,
+          snacks_picker_input = false,
+          snacks_picker_list = false,
+          snacks_picker_preview = false,
+          TelescopePrompt = false,
+          TelescopeResults = false,
+          fzf = false,
+          fzf_lua = false,
+          cmp_menu = false,
+          cmp_docs = false,
+          noice = false,
+          dressage = false,
         },
         default_filetype_enabled = true,
         map_keys = true,
@@ -27,6 +38,27 @@ return {
         group = group,
         callback = function()
           if vim.bo.buftype ~= "" then
+            return
+          end
+          local excluded_filetypes = {
+            "TelescopePrompt",
+            "TelescopeResults",
+            "fzf",
+            "fzf_lua",
+            "snacks_input",
+            "snacks_picker_input",
+            "snacks_picker_list",
+            "snacks_picker_preview",
+            "cmp_menu",
+            "cmp_docs",
+            "noice",
+            "dressage",
+          }
+          if vim.tbl_contains(excluded_filetypes, vim.bo.filetype) then
+            return
+          end
+          local bufname = vim.api.nvim_buf_get_name(0)
+          if bufname == "" or not vim.fn.filereadable(bufname) then
             return
           end
           vim.schedule(function()

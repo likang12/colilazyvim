@@ -10,6 +10,7 @@ local function set_codecompanion_input_behavior(auto_submit, return_win)
 end
 
 return {
+  {
   "olimorris/codecompanion.nvim",
   dependencies = {
     "nvim-lua/plenary.nvim",
@@ -239,8 +240,8 @@ return {
             else
               vim.cmd("write")
             end
-            if not auto_submit and return_win and vim.api.nvim_win_is_valid(return_win) then
               -- CLI focus happens with a small defer in the plugin; run later to keep editor focus.
+            if not auto_submit and return_win and vim.api.nvim_win_is_valid(return_win) then
               vim.defer_fn(function()
                 if vim.api.nvim_win_is_valid(return_win) then
                   vim.api.nvim_set_current_win(return_win)
@@ -261,4 +262,14 @@ return {
       end,
     })
   end,
+  },
+  {
+    "folke/which-key.nvim",
+    optional = true,
+    opts = {
+      spec = {
+        { "<leader>a", group = "codecompanion", icon = "🤖" },
+      },
+    },
+  },
 }

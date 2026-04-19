@@ -3,7 +3,6 @@
 -- Add any additional options here
 
 vim.g.mapleader = ","
-vim.g.maplocalleader = "\\"
 vim.g.ai_cmp = true
 
 -- 基础设置
@@ -11,6 +10,9 @@ vim.g.ai_cmp = true
 vim.opt.number = true -- 显示行号
 vim.opt.relativenumber = false -- 显示相对行号
 vim.opt.cursorline = true -- 高亮当前行
+vim.opt.scrolloff = 2
+-- 不与系统剪贴板同步无名寄存器；需要时再 `"+y` / `"+p`
+vim.opt.clipboard = ""
 
 -- 缩进设置
 vim.opt.autoindent = true -- 自动缩进

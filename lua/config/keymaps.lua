@@ -36,6 +36,11 @@ end, { desc = "Trim trailing whitespace" })
 
 vim.keymap.set("x", "<leader>tw", [[:s/[ \t]\+$//e<CR>]], { desc = "Trim trailing whitespace (selection)" })
 
+-- 切换当前行 git blame 虚拟文本
+vim.keymap.set("n", "<leader>ub", function()
+  require("gitsigns").toggle_current_line_blame()
+end, { desc = "Toggle Git Blame Line" })
+
 -- 将默认 clang-format 模板复制到当前工作目录
 vim.keymap.set("n", "<leader>tt", function()
   local src = vim.fn.stdpath("config") .. "/format/clang-format.default"

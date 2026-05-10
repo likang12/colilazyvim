@@ -1,4 +1,4 @@
-local AGENT = "agent"
+local AGENT = "claude"
 local pending_visual_ref = nil
 
 local function visual_reference()
@@ -169,7 +169,7 @@ return {
           if not instance.ui:is_visible() then
             instance.ui:open()
           end
-          require("codecompanion").cli("#{buffer}", { submit = false, focus = false })
+          require("codecompanion").cli("#{buffer}", { submit = false, focus = true})
         end
       end,
       mode = { "n" },
@@ -269,9 +269,9 @@ return {
       callback = function(args)
         local bufnr = args.buf
 
-        -- Esc: exit insert → terminal-normal mode
-        vim.keymap.set("t", "<Esc>", "<C-\\><C-n>", {
-          buffer = bufnr, nowait = true, desc = "Exit terminal insert mode",
+        -- Ctrl+Alt+N: exit insert → terminal-normal mode
+        vim.keymap.set("t", "<C-M-n>", "<C-\\><C-n>", {
+          buffer = bufnr, nowait = true, desc = "Exit terminal insert mode (Ctrl+Alt+N)",
         })
 
         -- Esc: in terminal-normal mode → switch focus away

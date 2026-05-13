@@ -1,5 +1,207 @@
-local AGENT = "claude"
+local AGENT = "codex"
 local pending_visual_ref = nil
+
+local cli_layout = "half"
+
+local CLI_WINDOWS = {
+  half = {
+    layout = "vertical",
+    full_height = true,
+    position = "right",
+    width = 0.5,
+    opts = {
+      list = false,
+      wrap = true,
+    },
+  },
+  full = {
+    layout = "tab",
+    opts = {
+      list = false,
+      wrap = true,
+    },
+  },
+}
+
+local function set_cli_window(layout)
+  local config = require("codecompanion.config")
+  config.display.cli = config.display.cli or {}
+  config.display.cli.window = vim.deepcopy(CLI_WINDOWS[layout])
+end
+
+local function snapshot_buffers()
+  local buffers = {}
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    buffers[bufnr] = true
+  end
+  return buffers
+end
+
+local function cleanup_new_empty_buffers(before)
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if not before[bufnr]
+      and vim.api.nvim_buf_is_valid(bufnr)
+      and vim.api.nvim_buf_get_name(bufnr) == ""
+      and vim.bo[bufnr].buftype == ""
+      and vim.api.nvim_buf_line_count(bufnr) == 1
+      and vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] == ""
+    then
+      pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+    end
+  end
+end
+
+local function open_cli_window(instance)
+  local before = snapshot_buffers()
+  instance.ui:open()
+  cleanup_new_empty_buffers(before)
+end
+
+local function switch_away_from_cli_buffer(bufnr)
+  if vim.api.nvim_get_current_buf() ~= bufnr then
+    return
+  end
+
+  local alt = vim.fn.bufnr("#")
+  if alt > 0 and alt ~= bufnr and vim.api.nvim_buf_is_valid(alt) and vim.api.nvim_buf_is_loaded(alt) then
+    if pcall(vim.api.nvim_set_current_buf, alt) then
+      return
+    end
+  end
+
+  for _, candidate in ipairs(vim.api.nvim_list_bufs()) do
+    if candidate ~= bufnr and vim.api.nvim_buf_is_loaded(candidate) then
+      local buftype = vim.bo[candidate].buftype
+      if buftype == "" then
+        if pcall(vim.api.nvim_set_current_buf, candidate) then
+          return
+        end
+      end
+    end
+  end
+
+  vim.cmd("enew")
+end
+
+local function close_cli_tab(instance)
+  local winnr = instance and instance.ui.winnr
+  if not winnr or not vim.api.nvim_win_is_valid(winnr) then
+    return
+  end
+
+  local tab = vim.api.nvim_win_get_tabpage(winnr)
+  local tab_wins = vim.api.nvim_tabpage_list_wins(tab)
+  if #tab_wins == 1 and #vim.api.nvim_list_tabpages() > 1 then
+    local tabnr
+    for i, candidate in ipairs(vim.api.nvim_list_tabpages()) do
+      if candidate == tab then
+        tabnr = i
+        break
+      end
+    end
+    for _, candidate in ipairs(vim.api.nvim_list_tabpages()) do
+      if candidate ~= tab then
+        local target_win = vim.api.nvim_tabpage_get_win(candidate)
+        pcall(vim.api.nvim_set_current_win, target_win)
+        break
+      end
+    end
+    if tabnr then
+      pcall(vim.cmd, tabnr .. "tabclose")
+    end
+    return
+  end
+
+  pcall(vim.api.nvim_win_hide, winnr)
+end
+
+local function hide_cli(instance)
+  if not instance or not instance.ui:is_visible() then
+    return
+  end
+
+  pcall(vim.cmd.stopinsert)
+
+  if cli_layout == "full" then
+    close_cli_tab(instance)
+    return
+  end
+
+  local ok = pcall(function()
+    instance.ui:hide()
+  end)
+  if ok then
+    return
+  end
+
+  if instance.ui.winnr and vim.api.nvim_win_is_valid(instance.ui.winnr) then
+    pcall(vim.api.nvim_win_hide, instance.ui.winnr)
+  end
+end
+
+local function close_cli(instance)
+  if not instance then
+    return
+  end
+
+  hide_cli(instance)
+  if vim.api.nvim_buf_is_valid(instance.bufnr) then
+    pcall(function()
+      instance:close()
+    end)
+  end
+end
+
+local function open_cli(layout)
+  cli_layout = layout or cli_layout
+  set_cli_window(cli_layout)
+
+  local cli = require("codecompanion.interactions.cli")
+  local instance = cli.get_visible() or cli.last_cli()
+
+  if instance then
+    if not instance.ui:is_visible() then
+      open_cli_window(instance)
+    end
+    instance:focus()
+    return
+  end
+
+  instance = cli.create({ agent = AGENT })
+  if instance then
+    open_cli_window(instance)
+    instance:focus()
+  end
+end
+
+local function toggle_cli_layout()
+  local cli = require("codecompanion.interactions.cli")
+  local instance = cli.get_visible() or cli.last_cli()
+  local was_visible = instance and instance.ui:is_visible()
+
+  if was_visible then
+    hide_cli(instance)
+    cli_layout = cli_layout == "half" and "full" or "half"
+    set_cli_window(cli_layout)
+    open_cli_window(instance)
+    instance:focus()
+    return
+  end
+
+  open_cli(cli_layout)
+end
+
+local function toggle_cli_visibility()
+  local cli = require("codecompanion.interactions.cli")
+  local instance = cli.get_visible() or cli.last_cli()
+
+  if instance and instance.ui:is_visible() then
+    hide_cli(instance)
+    return
+  end
+
+  open_cli(cli_layout)
+end
 
 local function visual_reference()
   local _, sl = unpack(vim.fn.getpos("'<"))
@@ -28,6 +230,11 @@ return {
             args = {},
             description = "Claude CLI",
           },
+          codex = {
+            cmd = "codex",
+            args = {},
+            description = "Codex CLI",
+          },
           agent = {
             cmd = "agent",
             args = {},
@@ -53,49 +260,46 @@ return {
         },
       },
     },
-    -- display = {
-    --   cli = {
-    --     window = {
-    --       width = 1 / 3,
-    --     },
-    --   },
-    -- },
+    display = {
+      cli = {
+        window = CLI_WINDOWS[cli_layout],
+      },
+    },
   },
   keys = {
     {
       "<leader>at",
       function()
-        require("codecompanion").toggle_cli()
+        toggle_cli_visibility()
       end,
       desc = "Toggle Agent CLI",
     },
     {
       "<leader>aa",
       function()
-        local cli = require("codecompanion.interactions.cli")
-        local instance = cli.last_cli()
-        if instance then
-          if not instance.ui:is_visible() then
-            instance.ui:open()
-          end
-          instance:focus()
-          return
-        end
-        require("codecompanion").cli({})
+        open_cli(cli_layout)
       end,
+      mode = { "n", "t" },
       desc = "Open CLI",
+    },
+    {
+      "<C-M-k>",
+      function()
+        toggle_cli_layout()
+      end,
+      mode = { "n", "t" },
+      desc = "Toggle CLI Half/Full Screen",
     },
     {
       "<leader>an",
       function()
         local cli = require("codecompanion.interactions.cli")
-        local existing = cli.get_visible() or cli.last_cli()
-        if existing then
-          existing:close()
-        end
+        close_cli(cli.get_visible())
+        close_cli(cli.last_cli())
+        set_cli_window(cli_layout)
         local instance = cli.create({ agent = AGENT })
         if instance then
-          instance.ui:open()
+          open_cli_window(instance)
           instance:focus()
         end
       end,
@@ -144,33 +348,22 @@ return {
     {
       "<leader>af",
       function()
-        local cli = require("codecompanion.interactions.cli")
-        local instance = cli.get_visible() or cli.last_cli()
-        if instance then
-          if not instance.ui:is_visible() then
-            instance.ui:open()
-          end
-          instance:focus()
-          return
-        end
-        require("codecompanion").cli({})
+        open_cli(cli_layout)
       end,
+      mode = { "n", "t" },
       desc = "Focus CLI",
     },
     {
       "<leader>ab",
       function()
-        local cli = require("codecompanion.interactions.cli")
-        local instance = cli.get_visible() or cli.last_cli()
-        if not instance then
-          instance = cli.create()
+        local source = vim.api.nvim_buf_get_name(0)
+        if source == "" then
+          vim.notify("Current buffer has no file path", vim.log.levels.WARN)
+          return
         end
-        if instance then
-          if not instance.ui:is_visible() then
-            instance.ui:open()
-          end
-          require("codecompanion").cli("#{buffer}", { submit = false, focus = true})
-        end
+        local target = vim.fn.fnamemodify(source, ":.")
+        open_cli(cli_layout)
+        require("codecompanion").cli("#{buffer:" .. target .. "}", { agent = AGENT, submit = false, focus = true })
       end,
       mode = { "n" },
       desc = "Add file to CLI",
@@ -218,7 +411,7 @@ return {
 
         if instance and instance.ui:is_visible() then
           if instance.ui:is_active() then
-            require("codecompanion").toggle_cli()
+            hide_cli(instance)
             return
           end
           if is_visual then
@@ -248,13 +441,7 @@ return {
           return
         end
 
-        require("codecompanion").toggle_cli()
-        vim.schedule(function()
-          local inst = cli.get_visible() or cli.last_cli()
-          if inst then
-            inst:focus()
-          end
-        end)
+        open_cli(cli_layout)
       end,
       mode = { "n", "v", "t" },
       desc = "Smart toggle CLI (Ctrl+Alt+L)",

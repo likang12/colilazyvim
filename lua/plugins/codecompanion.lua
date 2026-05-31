@@ -1,27 +1,138 @@
-local AGENT = "codex"
-local pending_visual_ref = nil
+local uv = vim.uv or vim.loop
+local unpack = table.unpack or unpack ---@diagnostic disable-line: deprecated
 
-local cli_layout = "half"
+local LAYOUT = { HALF = "half", FULL = "full" }
+
+local AGENT_SPECS = {
+  claude = { cmd = "claude",       args = {}, description = "Claude CLI" },
+  cursor = { cmd = "cursor-agent", args = {}, description = "Cursor CLI" },
+  codex  = { cmd = "codex",        args = {}, description = "Codex CLI"  },
+  agent  = { cmd = "agent",        args = {}, description = "agent CLI"  },
+}
+local AGENT_PICKER_CHOICES = { "claude", "cursor", "codex" }
+
+local CLI_WIN_OPTS = {
+  list = false,
+  wrap = true,
+  number = false,
+  relativenumber = false,
+  signcolumn = "no",
+}
 
 local CLI_WINDOWS = {
-  half = {
+  [LAYOUT.HALF] = {
     layout = "vertical",
     full_height = true,
     position = "right",
     width = 0.5,
-    opts = {
-      list = false,
-      wrap = true,
-    },
+    opts = CLI_WIN_OPTS,
   },
-  full = {
+  [LAYOUT.FULL] = {
     layout = "tab",
-    opts = {
-      list = false,
-      wrap = true,
-    },
+    opts = CLI_WIN_OPTS,
   },
 }
+
+local AGENT = "claude"
+
+-- Queue rather than single slot: concurrent <leader>ae presses each get their
+-- own ref before the corresponding input buffer fires.
+local pending_visual_refs = {}
+
+-- Mirror of upstream's private `clis` table — populated by our
+-- CodeCompanionCLI{Created,Closed} autocmds in `config`. Insertion order =
+-- cycling order for <leader>an / <leader>ap.
+local cli_sessions = {}
+
+-- Upstream's `cli.last_cli()` is set only on create, never on focus, so after
+-- cycling back to A and hiding it, last_cli still points to whichever was
+-- created last. Maintained via BufEnter so the MRU pointer reflects the user's
+-- actual focus history.
+local last_used_cli = nil
+
+local function find_session(predicate)
+  for i, sess in ipairs(cli_sessions) do
+    if predicate(sess, i) then
+      return sess, i
+    end
+  end
+end
+
+local function track_session(instance)
+  if not instance or find_session(function(s) return s == instance end) then
+    return
+  end
+  table.insert(cli_sessions, instance)
+end
+
+local function untrack_session_by_bufnr(bufnr)
+  local _, idx = find_session(function(s) return s.bufnr == bufnr end)
+  if idx then
+    table.remove(cli_sessions, idx)
+  end
+end
+
+local function prune_dead_sessions()
+  for i = #cli_sessions, 1, -1 do
+    local inst = cli_sessions[i]
+    if not inst or not inst.bufnr or not vim.api.nvim_buf_is_valid(inst.bufnr) then
+      table.remove(cli_sessions, i)
+    end
+  end
+end
+
+-- Preference order: visible → our MRU → upstream's create-time pointer →
+-- list tail. The list-tail fallback matters because upstream nils last_cli
+-- when its instance is closed, so after <leader>ax hidden sessions can
+-- otherwise become unreachable.
+local function pick_cli_instance()
+  prune_dead_sessions()
+  local cli = require("codecompanion.interactions.cli")
+  local visible = cli.get_visible()
+  if visible then
+    return visible
+  end
+  if last_used_cli and last_used_cli.bufnr and vim.api.nvim_buf_is_valid(last_used_cli.bufnr) then
+    return last_used_cli
+  end
+  last_used_cli = nil
+  return cli.last_cli() or cli_sessions[#cli_sessions]
+end
+
+local function is_in_cli_buffer()
+  return vim.bo.filetype == "codecompanion_cli"
+end
+
+-- Deferred so it runs after ui:open()'s focus-stealing side effects.
+local function restore_focus_to(winnr)
+  vim.schedule(function()
+    if winnr and vim.api.nvim_win_is_valid(winnr) then
+      pcall(vim.api.nvim_set_current_win, winnr)
+      pcall(vim.cmd.stopinsert)
+    end
+  end)
+end
+
+-- Apply the focus rule: in-CC takes the new target's focus; out-of-CC stays.
+local function apply_focus_rule(target, was_in_cli, saved_win)
+  if was_in_cli then
+    if target then target:focus() end
+  else
+    restore_focus_to(saved_win)
+  end
+end
+
+-- Test hatch — read-only access to module locals from tests/.
+_G.__codecompanion_test_internals = {
+  cli_sessions = cli_sessions,
+  prune_dead_sessions = prune_dead_sessions,
+  get_last_used_cli = function() return last_used_cli end,
+}
+
+-- vim.ui.select is async; bail re-entrant <leader>aa presses.
+local am_picker_open = false
+
+local cli_layout = LAYOUT.HALF
 
 local function set_cli_window(layout)
   local config = require("codecompanion.config")
@@ -38,9 +149,17 @@ local function snapshot_buffers()
 end
 
 local function cleanup_new_empty_buffers(before)
+  local displayed = {}
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(win) then
+      displayed[vim.api.nvim_win_get_buf(win)] = true
+    end
+  end
+
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if not before[bufnr]
       and vim.api.nvim_buf_is_valid(bufnr)
+      and not displayed[bufnr]
       and vim.api.nvim_buf_get_name(bufnr) == ""
       and vim.bo[bufnr].buftype == ""
       and vim.api.nvim_buf_line_count(bufnr) == 1
@@ -51,10 +170,148 @@ local function cleanup_new_empty_buffers(before)
   end
 end
 
-local function open_cli_window(instance)
-  local before = snapshot_buffers()
+local function defer_cleanup_buffers(before)
+  vim.defer_fn(function()
+    cleanup_new_empty_buffers(before)
+  end, 100)
+end
+
+-- POSIX SIGWINCH (Linux/macOS/BSD = 28); resize-wiggle fallback covers others.
+local SIGWINCH = 28
+
+local last_dims_by_chan = {}
+
+local function send_sigwinch_to_chan(chan)
+  local ok_pid, pid = pcall(vim.fn.jobpid, chan)
+  if not ok_pid or type(pid) ~= "number" or pid <= 0 then
+    return false
+  end
+  local ok, ret = pcall(uv.kill, pid, SIGWINCH)
+  return ok and ret == 0
+end
+
+local function scroll_to_live_region(winnr, bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local last_line = vim.api.nvim_buf_line_count(bufnr)
+  if last_line > 0 then
+    pcall(vim.api.nvim_win_set_cursor, winnr, { last_line, 0 })
+  end
+end
+
+-- Debounced final repaint after the user stops toggling — fires on the
+-- *current* window, not a captured (possibly stale) winnr.
+local FOLLOWUP_MS = 80
+local pending_followups = {}
+
+local function cancel_followup(chan)
+  local timer = pending_followups[chan]
+  if not timer then
+    return
+  end
+  pending_followups[chan] = nil
+  pcall(function()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end)
+end
+
+local function schedule_followup(chan, instance, bufnr)
+  cancel_followup(chan)
+  local timer = uv.new_timer()
+  if not timer then
+    return
+  end
+  pending_followups[chan] = timer
+  timer:start(FOLLOWUP_MS, 0, vim.schedule_wrap(function()
+    if pending_followups[chan] == timer then
+      pending_followups[chan] = nil
+    end
+    pcall(function()
+      if not timer:is_closing() then
+        timer:stop()
+        timer:close()
+      end
+    end)
+
+    -- Re-derive winnr: captured one may be recycled during a hide/show storm.
+    if not instance or not instance.ui or not instance.ui:is_visible() then
+      return
+    end
+    local cur_winnr = instance.ui.winnr
+    if not cur_winnr or not vim.api.nvim_win_is_valid(cur_winnr) then
+      return
+    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+    if vim.api.nvim_win_get_buf(cur_winnr) ~= bufnr then
+      return
+    end
+
+    send_sigwinch_to_chan(chan)
+    scroll_to_live_region(cur_winnr, bufnr)
+    pcall(vim.cmd, "redraw!")
+  end))
+end
+
+local function refresh_cli_terminal(instance)
+  local winnr = instance and instance.ui and instance.ui.winnr
+  if not winnr or not vim.api.nvim_win_is_valid(winnr) then
+    return
+  end
+  local bufnr = instance.bufnr
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local chan = instance.provider and instance.provider.chan
+  if not chan then
+    return
+  end
+
+  vim.schedule(function()
+    if not vim.api.nvim_win_is_valid(winnr) then
+      return
+    end
+    -- Bail if winnr was recycled onto a different buffer.
+    if vim.api.nvim_win_get_buf(winnr) ~= bufnr then
+      return
+    end
+
+    local w = vim.api.nvim_win_get_width(winnr)
+    local h = vim.api.nvim_win_get_height(winnr)
+    if w <= 1 or h <= 0 then
+      return
+    end
+
+    local prev = last_dims_by_chan[chan]
+    last_dims_by_chan[chan] = { w = w, h = h }
+
+    -- Only force SIGWINCH on no-op resizes; vim's own resize already triggers
+    -- one otherwise and an extra nudge yields a wrong-size intermediate frame.
+    if prev and prev.w == w and prev.h == h then
+      if not send_sigwinch_to_chan(chan) then
+        pcall(vim.fn.jobresize, chan, w - 1, h)
+        pcall(vim.fn.jobresize, chan, w, h)
+      end
+    end
+
+    scroll_to_live_region(winnr, bufnr)
+  end)
+
+  schedule_followup(chan, instance, bufnr)
+end
+
+local function open_cli_window(instance, opts)
+  opts = opts or {}
+  local before = opts.before or snapshot_buffers()
   instance.ui:open()
   cleanup_new_empty_buffers(before)
+  defer_cleanup_buffers(before)
+  refresh_cli_terminal(instance)
 end
 
 local function switch_away_from_cli_buffer(bufnr)
@@ -122,7 +379,7 @@ local function hide_cli(instance)
 
   pcall(vim.cmd.stopinsert)
 
-  if cli_layout == "full" then
+  if cli_layout == LAYOUT.FULL then
     close_cli_tab(instance)
     return
   end
@@ -144,6 +401,14 @@ local function close_cli(instance)
     return
   end
 
+  -- Read chan BEFORE instance:close() nils it; libuv reuses chan IDs and a
+  -- stale follow-up could otherwise fire against the wrong process.
+  local chan = instance.provider and instance.provider.chan
+  if chan then
+    cancel_followup(chan)
+    last_dims_by_chan[chan] = nil
+  end
+
   hide_cli(instance)
   if vim.api.nvim_buf_is_valid(instance.bufnr) then
     pcall(function()
@@ -156,9 +421,7 @@ local function open_cli(layout)
   cli_layout = layout or cli_layout
   set_cli_window(cli_layout)
 
-  local cli = require("codecompanion.interactions.cli")
-  local instance = cli.get_visible() or cli.last_cli()
-
+  local instance = pick_cli_instance()
   if instance then
     if not instance.ui:is_visible() then
       open_cli_window(instance)
@@ -167,6 +430,7 @@ local function open_cli(layout)
     return
   end
 
+  local cli = require("codecompanion.interactions.cli")
   instance = cli.create({ agent = AGENT })
   if instance then
     open_cli_window(instance)
@@ -175,15 +439,15 @@ local function open_cli(layout)
 end
 
 local function toggle_cli_layout()
-  local cli = require("codecompanion.interactions.cli")
-  local instance = cli.get_visible() or cli.last_cli()
+  local instance = pick_cli_instance()
   local was_visible = instance and instance.ui:is_visible()
 
   if was_visible then
+    local before = snapshot_buffers()
     hide_cli(instance)
-    cli_layout = cli_layout == "half" and "full" or "half"
+    cli_layout = cli_layout == LAYOUT.HALF and LAYOUT.FULL or LAYOUT.HALF
     set_cli_window(cli_layout)
-    open_cli_window(instance)
+    open_cli_window(instance, { before = before })
     instance:focus()
     return
   end
@@ -192,8 +456,7 @@ local function toggle_cli_layout()
 end
 
 local function toggle_cli_visibility()
-  local cli = require("codecompanion.interactions.cli")
-  local instance = cli.get_visible() or cli.last_cli()
+  local instance = pick_cli_instance()
 
   if instance and instance.ui:is_visible() then
     hide_cli(instance)
@@ -203,14 +466,161 @@ local function toggle_cli_visibility()
   open_cli(cli_layout)
 end
 
+-- Show `target` in the current cli_layout, then apply the focus rule.
+local function show_target(target, was_in_cli, saved_win)
+  if target then
+    set_cli_window(cli_layout)
+    if not target.ui:is_visible() then
+      open_cli_window(target)
+    end
+  end
+  apply_focus_rule(target, was_in_cli, saved_win)
+end
+
+-- direction=1 next, -1 previous. With no visible session we fall back to the
+-- first or last entry so the user can rejoin the cycle from a hidden state.
+-- Focus rule: in-CC follows the target; out-of-CC stays in the original window.
+local function cycle_cli_session(direction)
+  -- Prune defensively: CLIClosed should untrack on its own, but stale entries
+  -- here would crash show_target → target.ui:open(). Cheap, O(N).
+  prune_dead_sessions()
+  if #cli_sessions == 0 then
+    vim.notify("No CodeCompanion CLI sessions", vim.log.levels.WARN)
+    return
+  end
+
+  local was_in_cli = is_in_cli_buffer()
+  local saved_win = vim.api.nvim_get_current_win()
+  local current = require("codecompanion.interactions.cli").get_visible()
+
+  if #cli_sessions == 1 then
+    show_target(cli_sessions[1], was_in_cli, saved_win)
+    return
+  end
+
+  local _, idx = find_session(function(s) return s == current end)
+  local target_idx
+  if not idx then
+    target_idx = direction > 0 and 1 or #cli_sessions
+  else
+    target_idx = ((idx - 1 + direction) % #cli_sessions) + 1
+  end
+  local target = cli_sessions[target_idx]
+  if not target or target == current then
+    apply_focus_rule(current, was_in_cli, saved_win)
+    return
+  end
+
+  if current and current.ui:is_visible() then
+    hide_cli(current)
+  end
+  show_target(target, was_in_cli, saved_win)
+end
+
+-- Close current and auto-open the predecessor (cycling order) if any remain.
+local function close_current_cli_session()
+  local instance = pick_cli_instance()
+  if not instance then
+    vim.notify("No CodeCompanion CLI session to close", vim.log.levels.WARN)
+    return
+  end
+
+  local was_in_cli = is_in_cli_buffer()
+  local saved_win = vim.api.nvim_get_current_win()
+  -- Capture old position; after table.remove, the original predecessor lives
+  -- at old_idx-1, or at #cli_sessions when old_idx was 1 (wrap) or nil.
+  local _, old_idx = find_session(function(s) return s == instance end)
+
+  close_cli(instance)
+  prune_dead_sessions()
+
+  if #cli_sessions == 0 then
+    if not was_in_cli then
+      restore_focus_to(saved_win)
+    end
+    return
+  end
+
+  local target_idx = (not old_idx or old_idx <= 1) and #cli_sessions or old_idx - 1
+  show_target(cli_sessions[target_idx], was_in_cli, saved_win)
+end
+
+-- Picker keymaps (<leader>af / <leader>ad / <leader>aB) all funnel here.
+local function send_ref_to_cli(ref)
+  if not ref or ref == "" then
+    return
+  end
+  open_cli(cli_layout)
+  require("codecompanion").cli(ref, {
+    agent = AGENT,
+    submit = false,
+    focus = true,
+  })
+end
+
+-- Snacks-picker items for cwd subdirs; prefer fd/fdfind, fall back to find.
+local function list_directory_items()
+  local cmd
+  if vim.fn.executable("fd") == 1 then
+    cmd = { "fd", "--type", "d", "--hidden", "--exclude", ".git", "--strip-cwd-prefix" }
+  elseif vim.fn.executable("fdfind") == 1 then
+    cmd = { "fdfind", "--type", "d", "--hidden", "--exclude", ".git", "--strip-cwd-prefix" }
+  else
+    cmd = { "find", ".", "-type", "d", "-not", "-path", "*/.git*", "-mindepth", "1" }
+  end
+  local out = vim.fn.systemlist(cmd)
+  local items = {}
+  for _, raw in ipairs(out) do
+    local rel = raw:gsub("^%./", ""):gsub("/$", "")
+    if rel ~= "" and rel ~= "." then
+      table.insert(items, { text = rel, file = rel })
+    end
+  end
+  return items
+end
+
 local function visual_reference()
   local _, sl = unpack(vim.fn.getpos("'<"))
   local _, el = unpack(vim.fn.getpos("'>"))
   local path = vim.fn.expand("%:.")
+  if path == "" then
+    -- Unnamed / terminal / [No Name] — no resolvable ref to send downstream.
+    vim.notify("Visual selection has no resolvable file path", vim.log.levels.WARN)
+    return nil
+  end
   if sl == el then
     return string.format("@%s (line %d)", path, sl)
   end
   return string.format("@%s (lines %d-%d)", path, sl, el)
+end
+
+-- Feed <Esc> first: visual marks aren't valid until visual mode exits.
+local function with_visual_ref(callback)
+  local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+  vim.api.nvim_feedkeys(esc, "nx", false)
+  vim.schedule(function()
+    callback(visual_reference())
+  end)
+end
+
+-- Snacks `confirm` factory: closes picker, normalizes, sends "@<rel><suffix>".
+local function picker_send_path_to_cli(opts)
+  opts = opts or {}
+  return function(picker, item)
+    picker:close()
+    if not item then
+      return
+    end
+    local path = item.file or item._path or item.text
+    if not path or path == "" then
+      if opts.warn_missing then
+        vim.notify("Selected item has no file path", vim.log.levels.WARN)
+      end
+      return
+    end
+    local rel = vim.fn.fnamemodify(path, ":.")
+    send_ref_to_cli("@" .. rel .. (opts.suffix or ""))
+  end
 end
 
 return {
@@ -224,23 +634,7 @@ return {
     interactions = {
       cli = {
         agent = AGENT,
-        agents = {
-          claude = {
-            cmd = "claude",
-            args = {},
-            description = "Claude CLI",
-          },
-          codex = {
-            cmd = "codex",
-            args = {},
-            description = "Codex CLI",
-          },
-          agent = {
-            cmd = "agent",
-            args = {},
-            description = "agent CLI",
-          },
-        },
+        agents = AGENT_SPECS,
         opts = {
           auto_insert = true,
         },
@@ -277,10 +671,44 @@ return {
     {
       "<leader>aa",
       function()
-        open_cli(cli_layout)
+        local cli = require("codecompanion.interactions.cli")
+        if am_picker_open then
+          vim.notify("Agent picker is already open", vim.log.levels.INFO)
+          return
+        end
+        -- Race guard: abort if another <leader>a* changed state while the
+        -- picker was up.
+        local snapshot_visible = cli.get_visible()
+        local snapshot_last = cli.last_cli()
+        am_picker_open = true
+        vim.ui.select(AGENT_PICKER_CHOICES, {
+          prompt = "Select CLI Agent:",
+          format_item = function(item)
+            return item == AGENT and ("* " .. item) or ("  " .. item)
+          end,
+        }, function(choice)
+          am_picker_open = false
+          if not choice then
+            return
+          end
+          if cli.get_visible() ~= snapshot_visible or cli.last_cli() ~= snapshot_last then
+            vim.notify("CLI state changed during agent picker — aborted", vim.log.levels.WARN)
+            return
+          end
+
+          close_cli(cli.get_visible())
+          close_cli(cli.last_cli())
+
+          AGENT = choice
+          set_cli_window(cli_layout)
+          local instance = cli.create({ agent = choice })
+          if instance then
+            open_cli_window(instance)
+            instance:focus()
+          end
+        end)
       end,
-      mode = { "n", "t" },
-      desc = "Open CLI",
+      desc = "Select CLI agent (Claude/Codex/Cursor)",
     },
     {
       "<C-M-k>",
@@ -293,17 +721,38 @@ return {
     {
       "<leader>an",
       function()
-        local cli = require("codecompanion.interactions.cli")
-        close_cli(cli.get_visible())
-        close_cli(cli.last_cli())
-        set_cli_window(cli_layout)
-        local instance = cli.create({ agent = AGENT })
-        if instance then
-          open_cli_window(instance)
-          instance:focus()
-        end
+        cycle_cli_session(1)
       end,
-      desc = "New CodeCompanion session",
+      desc = "Next CodeCompanion CLI session",
+    },
+    {
+      "<leader>ap",
+      function()
+        cycle_cli_session(-1)
+      end,
+      desc = "Previous CodeCompanion CLI session",
+    },
+    {
+      "<leader>aN",
+      function()
+        local cli = require("codecompanion.interactions.cli")
+        local was_in_cli = is_in_cli_buffer()
+        local saved_win = vim.api.nvim_get_current_win()
+        -- Hide (not close) so <leader>ap can cycle back: aN means "add".
+        local current = cli.get_visible()
+        if current and current.ui:is_visible() then
+          hide_cli(current)
+        end
+        show_target(cli.create({ agent = AGENT }), was_in_cli, saved_win)
+      end,
+      desc = "New CodeCompanion CLI session",
+    },
+    {
+      "<leader>ax",
+      function()
+        close_current_cli_session()
+      end,
+      desc = "Close current CodeCompanion CLI session",
     },
     {
       "<leader>ae",
@@ -311,15 +760,16 @@ return {
         local mode = vim.fn.mode()
         local is_visual = mode == "v" or mode == "V" or mode == "\22"
         if is_visual then
-          local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
-          vim.api.nvim_feedkeys(esc, "nx", false)
-          vim.schedule(function()
-            pending_visual_ref = visual_reference()
+          with_visual_ref(function(ref)
+            if not ref then
+              return
+            end
+            -- Enqueue: a second press could clobber the first ref otherwise.
+            table.insert(pending_visual_refs, ref)
             require("codecompanion").cli("", { agent = AGENT, prompt = true, submit = false, focus = true })
           end)
           return
         end
-        pending_visual_ref = nil
         require("codecompanion").cli({ agent = AGENT, prompt = true, submit = true })
       end,
       mode = { "n", "v" },
@@ -332,10 +782,10 @@ return {
         local is_visual = mode == "v" or mode == "V" or mode == "\22"
         local opts = { agent = AGENT, submit = false, focus = true }
         if is_visual then
-          local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
-          vim.api.nvim_feedkeys(esc, "nx", false)
-          vim.schedule(function()
-            local ref = visual_reference()
+          with_visual_ref(function(ref)
+            if not ref then
+              return
+            end
             require("codecompanion").cli(ref, opts)
           end)
           return
@@ -348,10 +798,10 @@ return {
     {
       "<leader>af",
       function()
-        open_cli(cli_layout)
+        Snacks.picker.files({ confirm = picker_send_path_to_cli() })
       end,
-      mode = { "n", "t" },
-      desc = "Focus CLI",
+      mode = { "n" },
+      desc = "Pick file -> CLI",
     },
     {
       "<leader>ab",
@@ -366,82 +816,108 @@ return {
         require("codecompanion").cli("#{buffer:" .. target .. "}", { agent = AGENT, submit = false, focus = true })
       end,
       mode = { "n" },
-      desc = "Add file to CLI",
+      desc = "Add current buffer to CLI",
     },
     {
-      "<leader>ap",
+      "<leader>aB",
       function()
-        local dirs = {}
-        for _, dir in ipairs({
-          vim.fn.expand("~/.cursor/plans"),
-          vim.fn.getcwd() .. "/.cursor/plans",
-          vim.fn.expand("~/.claude/plans"),
-        }) do
-          if vim.fn.isdirectory(dir) == 1 then
-            table.insert(dirs, dir)
-          end
-        end
-        if #dirs == 0 then
-          vim.notify("No plan directories found", vim.log.levels.WARN)
-          return
-        end
-        Snacks.picker.files({ dirs = dirs, filter = { search = "*.md" } })
+        Snacks.picker.buffers({ confirm = picker_send_path_to_cli({ warn_missing = true }) })
       end,
-      desc = "Open plan files",
+      mode = { "n" },
+      desc = "Pick buffer -> CLI",
     },
     {
       "<leader>ad",
       function()
-        require("codecompanion").cli("#{diagnostics} Please fix these issues.", {
-          agent = AGENT,
-          focus = false,
-          submit = true,
+        local items = list_directory_items()
+        if #items == 0 then
+          vim.notify("No directories found", vim.log.levels.WARN)
+          return
+        end
+        Snacks.picker.pick({
+          items = items,
+          format = "file",
+          title = "Pick directory",
+          confirm = picker_send_path_to_cli({ suffix = "/" }),
         })
       end,
       mode = { "n" },
-      desc = "Send diagnostics to Agent CLI",
+      desc = "Pick directory -> CLI",
+    },
+    {
+      "<leader>aD",
+      function()
+        -- Diagnostics disabled by default (see CLAUDE.md); skip the picker.
+        if #vim.diagnostic.get() == 0 then
+          vim.notify("No diagnostics to send", vim.log.levels.WARN)
+          return
+        end
+        Snacks.picker.diagnostics({
+          confirm = function(picker, _item)
+            local picked = picker:selected({ fallback = true })
+            picker:close()
+            if not picked or #picked == 0 then
+              return
+            end
+            local sev_names = vim.diagnostic.severity
+            local lines = { "Please fix these diagnostics:" }
+            for _, it in ipairs(picked) do
+              local file = it.file and vim.fn.fnamemodify(it.file, ":.") or "?"
+              local lnum = it.pos and it.pos[1] or ((it.lnum or 0) + 1)
+              local sev = it.severity
+              if type(sev) == "number" then
+                sev = sev_names[sev] or tostring(sev)
+              end
+              local msg = (it.item and it.item.message) or it.comment or ""
+              table.insert(lines, string.format("- %s:%d [%s] %s", file, lnum, sev or "?", msg))
+            end
+            open_cli(cli_layout)
+            require("codecompanion").cli(table.concat(lines, "\n"), {
+              agent = AGENT,
+              submit = false,
+              focus = true,
+            })
+          end,
+        })
+      end,
+      mode = { "n" },
+      desc = "Pick diagnostics -> CLI",
     },
     {
       "<C-M-l>",
       function()
-        local cli = require("codecompanion.interactions.cli")
-        local instance = cli.get_visible() or cli.last_cli()
+        local instance = pick_cli_instance()
         local mode = vim.fn.mode()
         local is_visual = mode == "v" or mode == "V" or mode == "\22"
+
+        local function send_visual_ref()
+          local before = snapshot_buffers()
+          with_visual_ref(function(ref)
+            if ref then
+              require("codecompanion").cli(ref, {
+                agent = AGENT, submit = false, focus = true,
+              })
+            end
+            defer_cleanup_buffers(before)
+          end)
+        end
 
         if instance and instance.ui:is_visible() then
           if instance.ui:is_active() then
             hide_cli(instance)
-            return
+          elseif is_visual then
+            send_visual_ref()
+          else
+            instance:focus()
           end
-          if is_visual then
-            local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
-            vim.api.nvim_feedkeys(esc, "nx", false)
-            vim.schedule(function()
-              local ref = visual_reference()
-              require("codecompanion").cli(ref, {
-                submit = false, focus = true,
-              })
-            end)
-            return
-          end
-          instance:focus()
           return
         end
 
         if is_visual then
-          local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
-          vim.api.nvim_feedkeys(esc, "nx", false)
-          vim.schedule(function()
-            local ref = visual_reference()
-            require("codecompanion").cli(ref, {
-              submit = false, focus = true,
-            })
-          end)
-          return
+          send_visual_ref()
+        else
+          open_cli(cli_layout)
         end
-
-        open_cli(cli_layout)
       end,
       mode = { "n", "v", "t" },
       desc = "Smart toggle CLI (Ctrl+Alt+L)",
@@ -449,6 +925,47 @@ return {
   },
   config = function(_, opts)
     require("codecompanion").setup(opts)
+
+    -- Mirror upstream's create/close events into cli_sessions + last_used_cli.
+    -- Using events (not wrapping cli.create call sites) also catches upstream
+    -- :CodeCompanionCLI invocations.
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "CodeCompanionCLICreated",
+      callback = function(args)
+        local instance = require("codecompanion.interactions.cli").last_cli()
+        if instance and instance.bufnr == (args.data and args.data.bufnr) then
+          track_session(instance)
+        end
+      end,
+    })
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "CodeCompanionCLIClosed",
+      callback = function(args)
+        local bufnr = args.data and args.data.bufnr
+        if bufnr then
+          untrack_session_by_bufnr(bufnr)
+          if last_used_cli and last_used_cli.bufnr == bufnr then
+            last_used_cli = nil
+          end
+        end
+      end,
+    })
+
+    -- Update MRU on any focus into a CC buffer — covers our own open path,
+    -- upstream :CodeCompanionCLI, and manual <C-w> window navigation.
+    vim.api.nvim_create_autocmd("BufEnter", {
+      callback = function(args)
+        if not vim.api.nvim_buf_is_valid(args.buf)
+          or vim.bo[args.buf].filetype ~= "codecompanion_cli"
+        then
+          return
+        end
+        local sess = find_session(function(s) return s.bufnr == args.buf end)
+        if sess then
+          last_used_cli = sess
+        end
+      end,
+    })
 
     -- Terminal buffer keymaps for codecompanion CLI
     vim.api.nvim_create_autocmd("FileType", {
@@ -477,9 +994,6 @@ return {
         vim.keymap.set("t", "<C-h>", "<C-\\><C-n><C-w>h", {
           buffer = bufnr, nowait = true, desc = "Window left",
         })
-        -- vim.keymap.set("t", "<C-j>", "<C-\\><C-n><C-w>j", {
-        --   buffer = bufnr, nowait = true, desc = "Window down",
-        -- })
         vim.keymap.set("t", "<C-k>", "<C-\\><C-n><C-w>k", {
           buffer = bufnr, nowait = true, desc = "Window up",
         })
@@ -503,7 +1017,7 @@ return {
       end,
     })
 
-    -- Input buffer: append visual reference on send, override plugin's keymaps
+    -- Input buffer claims one queued visual ref per instance.
     vim.api.nvim_create_autocmd("FileType", {
       pattern = "codecompanion_input",
       callback = function(args)
@@ -511,9 +1025,15 @@ return {
           if not vim.api.nvim_buf_is_valid(args.buf) then
             return
           end
+          local claimed_ref = nil
+          if #pending_visual_refs > 0 then
+            claimed_ref = table.remove(pending_visual_refs, 1)
+          end
+          vim.b[args.buf].codecompanion_visual_ref = claimed_ref
+
           local function send_with_ref()
-            local ref = pending_visual_ref
-            pending_visual_ref = nil
+            local ref = vim.b[args.buf].codecompanion_visual_ref
+            vim.b[args.buf].codecompanion_visual_ref = nil
             if ref then
               local lines = vim.api.nvim_buf_get_lines(args.buf, 0, -1, false)
               while #lines > 0 and lines[#lines]:match("^%s*$") do
@@ -543,7 +1063,7 @@ return {
     optional = true,
     opts = {
       spec = {
-        { "<leader>a", group = "codecompanion", icon = "✨" },
+        { "<leader>a", group = "codecompanion", icon = "🪄" },
       },
     },
   },

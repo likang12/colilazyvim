@@ -1,310 +1,172 @@
----与 colors.lua 中 `RenderMarkdown` + 后缀一致，用少量内置 highlight 覆盖（不用 default，盖过插件的 default=true）
----@return nil
-local function apply_simple_render_markdown_hl()
-  local P = 'RenderMarkdown'
-  -- 标题：链到 markdown treesitter 各级 heading（主题里多为蓝色/青色系）
-  for lvl = 1, 6 do
-    vim.api.nvim_set_hl(0, P .. 'H' .. lvl, {
-      link = ('@markup.heading.%d.markdown'):format(lvl),
-    })
-  end
-  ---@type table<string, string>
-  local map = {
-    H1Bg = 'Normal',
-    H2Bg = 'Normal',
-    H3Bg = 'Normal',
-    H4Bg = 'Normal',
-    H5Bg = 'Normal',
-    H6Bg = 'Normal',
-    -- 代码块
-    Code = 'Folded',
-    CodeInfo = 'Comment',
-    CodeBorder = 'Folded',
-    CodeFallback = 'Normal',
-    CodeInline = 'Pmenu',
-    -- 引用
-    Quote = 'Comment',
-    Quote1 = 'Comment',
-    Quote2 = 'Comment',
-    Quote3 = 'Comment',
-    Quote4 = 'Comment',
-    Quote5 = 'Comment',
-    Quote6 = 'Comment',
-    -- 通用
-    InlineHighlight = 'Visual',
-    Bullet = 'Normal',
-    Dash = 'LineNr',
-    Sign = 'SignColumn',
-    Math = 'Special',
-    Indent = 'Whitespace',
-    HtmlComment = 'Comment',
-    -- 链接
-    Link = 'Underlined',
-    LinkTitle = 'Special',
-    WikiLink = 'Underlined',
-    -- 任务列表
-    Unchecked = 'LineNr',
-    Checked = 'String',
-    Todo = 'Comment',
-    -- 表格
-    TableHead = 'Title',
-    TableRow = 'Normal',
-    -- Callout 分类（信息类沿用 Title；若需与标题蓝区分可再改）
-    Success = 'String',
-    Info = 'Title',
-    Hint = 'Directory',
-    Warn = 'WarningMsg',
-    Error = 'ErrorMsg',
-  }
-  for suffix, target in pairs(map) do
-    vim.api.nvim_set_hl(0, P .. suffix, { link = target })
-  end
-end
-
 return {
-  'MeanderingProgrammer/render-markdown.nvim',
-  -- 与 preset.lazy 的 file_types 对齐；未用 Avante 可从列表去掉
-  ft = { 'markdown', 'norg', 'rmd', 'org', 'codecompanion', 'Avante' },
-  dependencies = { 'nvim-treesitter/nvim-treesitter', 'nvim-mini/mini.nvim' },
-  config = function()
-    apply_simple_render_markdown_hl()
-    vim.api.nvim_create_autocmd('ColorScheme', {
-      group = vim.api.nvim_create_augroup('RenderMarkdownSimpleHl', { clear = true }),
-      pattern = '*',
-      callback = function()
-        vim.schedule(apply_simple_render_markdown_hl)
-      end,
-    })
-  end,
-  ---@module 'render-markdown'
-  ---@type render.md.UserConfig
-  opts = {
-    -- 文档：默认 true；preset.lazy 会合并进最终配置
-    enabled = true,
-    preset = 'lazy',
-    -- 不要用 `true`：Insert 里也会 conceal，不方便改 `#` 等
-    render_modes = { 'n', 'c', 't' },
-    debounce = 100,
-    max_file_size = 10.0,
-    nested = true,
-    restart_highlighter = false,
-    change_events = {},
+  {
+    "MeanderingProgrammer/render-markdown.nvim",
+    ft = { "markdown" },
+    init = function()
+      local function blend(fg, bg, alpha)
+        local function channel(color, shift)
+          return math.floor(color / shift) % 256
+        end
 
-    injections = {
-      gitcommit = {
+        local r = channel(fg, 0x10000) * alpha + channel(bg, 0x10000) * (1 - alpha)
+        local g = channel(fg, 0x100) * alpha + channel(bg, 0x100) * (1 - alpha)
+        local b = channel(fg, 1) * alpha + channel(bg, 1) * (1 - alpha)
+
+        return math.floor(r + 0.5) * 0x10000 + math.floor(g + 0.5) * 0x100 + math.floor(b + 0.5)
+      end
+
+      local function set_inline_code_bg()
+        local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+        local cursorline = vim.api.nvim_get_hl(0, { name = "CursorLine", link = false })
+        local normal_float = vim.api.nvim_get_hl(0, { name = "NormalFloat", link = false })
+        local color_column = vim.api.nvim_get_hl(0, { name = "ColorColumn", link = false })
+        local bg = cursorline.bg or normal_float.bg or color_column.bg
+
+        if bg then
+          bg = normal.bg and blend(bg, normal.bg, 0.45) or bg
+          vim.api.nvim_set_hl(0, "RenderMarkdownInlineCodeBg", { bg = bg })
+        end
+      end
+
+      set_inline_code_bg()
+      vim.api.nvim_create_autocmd("ColorScheme", {
+        callback = set_inline_code_bg,
+      })
+    end,
+    opts = {
+      heading = {
+        icons = { "󰼏 ", "󰎨 ", "󰎫 ", "󰎮 ", "󰎱 ", "󰎴 " },
+        backgrounds = {
+          "RenderMarkdownH2Bg",
+          "RenderMarkdownH2Bg",
+          "RenderMarkdownH2Bg",
+          "RenderMarkdownH2Bg",
+          "RenderMarkdownH2Bg",
+          "RenderMarkdownH2Bg",
+        },
+        foregrounds = {
+          "RenderMarkdownH2",
+          "RenderMarkdownH2",
+          "RenderMarkdownH2",
+          "RenderMarkdownH2",
+          "RenderMarkdownH2",
+          "RenderMarkdownH2",
+        },
+        width = "block",
+        border = false,
+      },
+      code = {
+        language = false,
+        language_icon = false,
+        language_name = false,
+        language_info = false,
+        border = "thin",
+        highlight_inline = "RenderMarkdownInlineCodeBg",
+      },
+      link = {
         enabled = true,
-        query = [[
-            ((message) @injection.content
-                (#set! injection.combined)
-                (#set! injection.include-children)
-                (#set! injection.language "markdown"))
-        ]],
-      },
-    },
-
-    patterns = {
-      markdown = {
-        disable = true,
-        directives = {
-          { id = 17, name = 'conceal_lines' },
-          { id = 18, name = 'conceal_lines' },
+        render_modes = false,
+        footnote = {
+          enabled = true,
+          superscript = true,
+          prefix = "",
+          suffix = "",
+        },
+        image = "󰥶 ",
+        email = "󰀓 ",
+        hyperlink = "󰌹 ",
+        highlight = "RenderMarkdownLink",
+        wiki = {
+          icon = "󱗖 ",
+          body = function()
+            return nil
+          end,
+          highlight = "RenderMarkdownWikiLink",
+        },
+        custom = {
+          web = { pattern = "^http", icon = "󰖟 " },
+          github = { pattern = "github%.com", icon = "󰊤 " },
+          gitlab = { pattern = "gitlab%.com", icon = "󰮠 " },
+          stackoverflow = { pattern = "stackoverflow%.com", icon = "󰓌 " },
+          wikipedia = { pattern = "wikipedia%.org", icon = "󰖬 " },
+          youtube = { pattern = "youtube%.com", icon = "󰗃 " },
         },
       },
-    },
-
-    anti_conceal = {
-      enabled = true,
-      disabled_modes = false,
-      above = 0,
-      below = 0,
-      -- Wiki 默认：这些元素不受光标行 anti_conceal 影响
-      ignore = {
-        code_background = true,
-        indent = true,
-        sign = true,
-        virtual_lines = true,
+      callout = {
+        note = { raw = "[!NOTE]", rendered = "󰋽 Note", highlight = "RenderMarkdownInfo" },
+        tip = { raw = "[!TIP]", rendered = "󰌶 Tip", highlight = "RenderMarkdownSuccess" },
+        important = { raw = "[!IMPORTANT]", rendered = "󰅾 Important", highlight = "RenderMarkdownHint" },
+        warning = { raw = "[!WARNING]", rendered = "󰀪 Warning", highlight = "RenderMarkdownWarn" },
+        caution = { raw = "[!CAUTION]", rendered = "󰳦 Caution", highlight = "RenderMarkdownError" },
+        abstract = { raw = "[!ABSTRACT]", rendered = "󰨸 Abstract", highlight = "RenderMarkdownInfo" },
+        summary = { raw = "[!SUMMARY]", rendered = "󰨸 Summary", highlight = "RenderMarkdownInfo" },
+        tldr = { raw = "[!TLDR]", rendered = "󰨸 Tldr", highlight = "RenderMarkdownInfo" },
+        info = { raw = "[!INFO]", rendered = "󰋽 Info", highlight = "RenderMarkdownInfo" },
+        todo = { raw = "[!TODO]", rendered = "󰗡 Todo", highlight = "RenderMarkdownInfo" },
+        hint = { raw = "[!HINT]", rendered = "󰌶 Hint", highlight = "RenderMarkdownSuccess" },
+        success = { raw = "[!SUCCESS]", rendered = "󰄬 Success", highlight = "RenderMarkdownSuccess" },
+        check = { raw = "[!CHECK]", rendered = "󰄬 Check", highlight = "RenderMarkdownSuccess" },
+        done = { raw = "[!DONE]", rendered = "󰄬 Done", highlight = "RenderMarkdownSuccess" },
+        question = { raw = "[!QUESTION]", rendered = "󰘥 Question", highlight = "RenderMarkdownWarn" },
+        help = { raw = "[!HELP]", rendered = "󰘥 Help", highlight = "RenderMarkdownWarn" },
+        faq = { raw = "[!FAQ]", rendered = "󰘥 Faq", highlight = "RenderMarkdownWarn" },
+        attention = { raw = "[!ATTENTION]", rendered = "󰀪 Attention", highlight = "RenderMarkdownWarn" },
+        failure = { raw = "[!FAILURE]", rendered = "󰅖 Failure", highlight = "RenderMarkdownError" },
+        fail = { raw = "[!FAIL]", rendered = "󰅖 Fail", highlight = "RenderMarkdownError" },
+        missing = { raw = "[!MISSING]", rendered = "󰅖 Missing", highlight = "RenderMarkdownError" },
+        danger = { raw = "[!DANGER]", rendered = "󱐌 Danger", highlight = "RenderMarkdownError" },
+        error = { raw = "[!ERROR]", rendered = "󱐌 Error", highlight = "RenderMarkdownError" },
+        bug = { raw = "[!BUG]", rendered = "󰨰 Bug", highlight = "RenderMarkdownError" },
+        example = { raw = "[!EXAMPLE]", rendered = "󰉹 Example", highlight = "RenderMarkdownHint" },
+        quote = { raw = "[!QUOTE]", rendered = "󱆨 Quote", highlight = "RenderMarkdownQuote" },
+        cite = { raw = "[!CITE]", rendered = "󱆨 Cite", highlight = "RenderMarkdownQuote" },
       },
-    },
-
-    padding = {
-      highlight = 'Normal',
-    },
-
-    -- 插件默认：`concealcursor.rendered = ''`，渲染窗口下 Normal 也会 conceal `#` 等（美化视图）。
-    -- 先前设为 `nvic` 会在 n/v/i/c 模式整窗取消 conceal，导致 Normal 下仍看到 `#`；若不希望显示原文，保持空字符串即可。
-    win_options = {
-      conceallevel = { default = vim.o.conceallevel, rendered = 3 },
-      concealcursor = { default = vim.o.concealcursor, rendered = '' },
-    },
-
-    overrides = {
-      buflisted = {},
-      buftype = {
-        nofile = {
-          render_modes = true,
-          padding = { highlight = 'NormalFloat' },
-          sign = { enabled = false },
+      checkbox = {
+        enabled = true,
+        render_modes = false,
+        bullet = false,
+        right_pad = 1,
+        unchecked = {
+          icon = "󰄱 ",
+          highlight = "RenderMarkdownUnchecked",
+          scope_highlight = nil,
+        },
+        checked = {
+          icon = "󰱒 ",
+          highlight = "RenderMarkdownChecked",
+          scope_highlight = nil,
+        },
+        custom = {
+          todo = { raw = "[-]", rendered = "󰥔 ", highlight = "RenderMarkdownTodo", scope_highlight = nil },
         },
       },
-      filetype = {},
-      preview = {
-        render_modes = true,
+      bullet = {
+        enabled = true,
+        render_modes = false,
+        icons = { "●", "○", "◆", "◇" },
+        ordered_icons = function(ctx)
+          local value = vim.trim(ctx.value)
+          local index = tonumber(value:sub(1, #value - 1))
+          return ("%d."):format(index > 1 and index or ctx.index)
+        end,
+        left_pad = function(ctx)
+          return ctx.level * vim.bo.tabstop
+        end,
+        right_pad = 0,
+        highlight = "RenderMarkdownBullet",
+        scope_highlight = {},
       },
-    },
-
-    document = {
-      enabled = true,
-      render_modes = false,
-      conceal = {
-        char_patterns = {},
-        line_patterns = {},
+      quote = { icon = "▋" },
+      anti_conceal = {
+        enabled = true,
+        ignore = {
+          code_background = true,
+          sign = true,
+        },
+        above = 0,
+        below = 0,
       },
-    },
-
-    paragraph = {
-      enabled = true,
-      render_modes = false,
-      left_margin = 0,
-      indent = 0,
-      min_width = 0,
-    },
-
-    heading = {
-      width = 'block',
-      border = false,
-      backgrounds = {
-        'Normal',
-        'Normal',
-        'Normal',
-        'Normal',
-        'Normal',
-        'Normal',
-      },
-      -- 与 RenderMarkdownH1–H6 及 @markup.heading.* 对齐，Normal 下标题为各主题常为蓝色的 heading 色
-      foregrounds = {
-        'RenderMarkdownH1',
-        'RenderMarkdownH2',
-        'RenderMarkdownH3',
-        'RenderMarkdownH4',
-        'RenderMarkdownH5',
-        'RenderMarkdownH6',
-      },
-    },
-
-    code = {
-      style = 'normal',
-      language_icon = false,
-      border = 'none',
-      -- 结构上与 plugin 默认一致，仅关闭 sign（preset.lazy 已关）
-      sign = false,
-    },
-
-    bullet = {
-      enabled = true,
-      render_modes = false,
-      highlight = 'Normal',
-      scope_highlight = {},
-    },
-
-    dash = {
-      enabled = true,
-      render_modes = false,
-      highlight = 'Comment',
-    },
-
-    quote = {
-      enabled = true,
-      render_modes = false,
-      highlight = {
-        'Comment',
-        'Comment',
-        'Comment',
-        'Comment',
-        'Comment',
-        'Comment',
-      },
-    },
-
-    pipe_table = {
-      enabled = true,
-      render_modes = false,
-      preset = 'none',
-      cell = 'padded',
-      border_enabled = true,
-      style = 'full',
-    },
-
-    -- preset.lazy 默认 false；按文档「渲染任务列表」打开
-    checkbox = {
-      enabled = true,
-      render_modes = false,
-      bullet = false,
-      left_pad = 0,
-      right_pad = 1,
-      unchecked = {
-        icon = '󰄱 ',
-        highlight = 'RenderMarkdownUnchecked',
-        scope_highlight = nil,
-      },
-      checked = {
-        icon = '󰱒 ',
-        highlight = 'RenderMarkdownChecked',
-        scope_highlight = nil,
-      },
-    },
-
-    -- link、callout 等沿用插件内置默认；配色由文件顶部 RenderMarkdown* → 内置组的映射统一负责
-
-    inline_highlight = {
-      enabled = true,
-      render_modes = false,
-      highlight = 'RenderMarkdownInlineHighlight',
-    },
-
-    latex = {
-      enabled = true,
-      render_modes = false,
-      converter = { 'utftex', 'latex2text' },
-      highlight = 'RenderMarkdownMath',
-      position = 'center',
-      top_pad = 0,
-      bottom_pad = 0,
-    },
-
-    html = {
-      enabled = true,
-      render_modes = false,
-      comment = {
-        conceal = true,
-        text = nil,
-        highlight = 'RenderMarkdownHtmlComment',
-      },
-      tag = {},
-    },
-
-    yaml = {
-      enabled = true,
-      render_modes = false,
-    },
-
-    sign = {
-      enabled = true,
-      highlight = 'RenderMarkdownSign',
-    },
-
-    indent = {
-      enabled = false,
-      render_modes = false,
-      per_level = 2,
-      skip_level = 1,
-      skip_heading = false,
-      icon = '▎',
-      priority = 0,
-      highlight = 'RenderMarkdownIndent',
-    },
-
-    completions = {
-      blink = { enabled = true },
     },
   },
 }
+

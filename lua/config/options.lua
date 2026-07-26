@@ -47,3 +47,7 @@ vim.diagnostic.enable(false)
 
 --- 关闭永久撤销功能
 vim.opt.undofile = false
+
+-- 使用 neo-tree 作为文件浏览器
+vim.g.lazyvim_explorer = "neo-tree"
+
